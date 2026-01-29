@@ -3,265 +3,569 @@ import os
 import time
 import re
 import subprocess
-import random
-import pyautogui  # 新增：用于控制键盘鼠标
+import pyautogui
 import pyperclip
+import pygetwindow as gw
 from openai import OpenAI
+import json
+import ast
+from typing import Dict, Any, Callable
 
 # ================= 配置区域 =================
 API_BASE = "http://120.24.173.129:3000/api/v1"
-API_KEY = "fastgpt-v43vbGD5I0PdHpYSweJrwn7NcjKom7W8xBvGQTjg5lmkcV7PcnMcZeh8KaRUX"
+API_KEY = "fastgpt-xEnWOUtLbvamg9kOtwtWYQpLzwNovtWLGY9WuibYKngIyYdSe2pmvUjpiM8LUTX"
 MODEL_NAME = "qwen-max"
 
 client = OpenAI(api_key=API_KEY, base_url=API_BASE)
-
-# PyAutoGUI 安全设置：如果鼠标移动到屏幕左上角，强制停止脚本 (防止失控)
 pyautogui.FAILSAFE = True 
 
-# ================= 1. 视觉与GUI工具 (手) =================
+# ================= 工具函数 =================
 
-def open_vscode_and_type(filename, code_content):
+def print_log(role, msg):
+    colors = {
+        "System": "\033[95m", "Tool": "\033[94m", "Agent": "\033[92m", 
+        "Error": "\033[91m", "Think": "\033[93m", "Plan": "\033[96m", 
+        "Skill": "\033[97m", "Reset": "\033[0m"
+    }
+    print(f"{colors.get(role, colors['Reset'])}[{role}] {msg}{colors['Reset']}")
+
+# ================= SKILL 基类 =================
+
+class Skill:
     """
-    【最终稳定版】
-    策略：
-    1. 换行后，VS Code 会自动送缩进（空格）。
-    2. 我们不删这些空格（因为容易误删换行符）。
-    3. 我们按两次 Home 回到行首，直接粘贴新代码。
-    4. 此时行尾会有多余的空格，但这不影响代码运行。
-    5. 最后统一用格式化快捷键清理现场。
+    Skill 基类 - 所有技能都继承自这个类
+    每个 Skill 必须实现:
+    1. name: 技能名称
+    2. description: 技能描述 (给 LLM 看的)
+    3. parameters: 参数定义 (JSON Schema 格式)
+    4. execute: 执行逻辑
     """
-    print_system_msg(f"正在打开 VS Code 并创建文件: {filename} ...")
     
-    # 1. 打开文件
-    subprocess.Popen(f'code "{filename}"', shell=True)
-    time.sleep(3) # 给足启动时间
-
-    # 2. 聚焦并清空
-    pyautogui.hotkey('ctrl', 'a')
-    time.sleep(0.2)
-    pyautogui.press('backspace')
+    def __init__(self):
+        self.name = "base_skill"
+        self.description = "Base skill class"
+        self.parameters = {}
     
-    print_system_msg("开始输入代码...")
+    def execute(self, **kwargs) -> str:
+        """执行技能，返回结果字符串"""
+        raise NotImplementedError("Subclass must implement execute()")
     
-    lines = code_content.split('\n')
-    
-    for i, line in enumerate(lines):
-        # 即使是空行，我们也处理，保证格式统一
-        
-        # 1. 复制当前行
-        if line:
-            pyperclip.copy(line)
-        
-        # 2. 粘贴 (如果有内容)
-        if line:
-            pyautogui.hotkey('ctrl', 'v')
-        
-        time.sleep(0.05) 
-        
-        # 3. 换行准备进入下一行
-        if i < len(lines) - 1:
-            pyautogui.press('enter')
-            time.sleep(0.1) # 等待换行
-            
-            # === 核心修改 ===
-            # 不要按 Backspace 删除缩进了！
-            # 只要强行回到最左边即可。
-            # VS Code 按一次 Home 可能只回到缩进处，按两次一定回到行首。
-            pyautogui.press(['home', 'home']) 
-            
-            # 现在光标在第0列，下一行粘贴时会自带缩进。
-            # 原本 VS Code 自动生成的缩进现在变成了行尾的空格，
-            # Python 解释器会忽略行尾空格，所以这是安全的。
-            # =================
-            
-        # 随机延时，增加拟人感
-        time.sleep(random.uniform(0.05, 0.15))
+    def to_tool_definition(self) -> Dict:
+        """转换为 LLM 可理解的工具定义格式"""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters
+        }
 
-    # 4. 最后的大扫除：格式化代码
-    # 这会把我们留下的行尾垃圾空格全部自动清理掉
-    print_system_msg("输入完成，正在整理格式...")
-    time.sleep(1)
-    pyautogui.hotkey('shift', 'alt', 'f')
-    time.sleep(1)
+# ================= SKILL 1: VS Code 写代码 =================
 
-    # 5. 保存
-    pyautogui.hotkey('ctrl', 's')
-    print_system_msg("文件已保存。")
-    time.sleep(1)
-
-def print_system_msg(msg):
-    print(f"\033[92m[Agent Action] {msg}\033[0m")
-
-# ================= 2. 执行工具 (验证) =================
-
-def run_python_file(filename):
+class VSCodeWriteSkill(Skill):
     """
-    运行代码，具备【智能依赖检测】与【环境自动净化】能力
+    Skill: VS Code 写代码
+    功能: 通过 GUI 自动化将代码写入 VS Code
     """
-    print_system_msg(f"正在终端运行 {filename} 验证结果...")
     
-    max_install_attempts = 3
-    attempt = 0
+    def __init__(self):
+        super().__init__()
+        self.name = "vscode_write"
+        self.description = """
+        使用 VS Code 编辑器写入代码文件。
+        适用场景: 创建新的 Python 脚本、修改代码文件。
+        注意: 必须提供完整的代码，不支持增量修改。
+        """
+        self.parameters = {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "要创建/编辑的文件名 (如 game.py)"
+                },
+                "code": {
+                    "type": "string",
+                    "description": "完整的代码内容"
+                }
+            },
+            "required": ["filename", "code"]
+        }
     
-    # 禁止自动安装的名单
-    DENY_LIST = {'exceptions', 'sys', 'os', 're', 'time', 'json', 'math', 'random', 'subprocess'}
-    
-    while attempt < max_install_attempts:
-        attempt += 1
+    def _ensure_vscode_focused(self, filename: str) -> bool:
+        """确保 VS Code 窗口处于激活状态"""
+        subprocess.Popen(f'code "{filename}"', shell=True)
+        time.sleep(2)
+        
+        target_window = None
+        for _ in range(5):
+            windows = gw.getWindowsWithTitle('Visual Studio Code')
+            if windows:
+                target_window = windows[0]
+                break
+            time.sleep(1)
+        
+        if not target_window:
+            return False
         
         try:
+            if target_window.isMinimized:
+                target_window.restore()
+            target_window.activate()
+            time.sleep(0.5)
+            return True
+        except:
+            return False
+    
+    def execute(self, code: str, filename: str = None, file: str = None) -> str:
+        """执行写代码操作（支持 filename 或 file 参数）"""
+        # 兼容两种参数名
+        filename = filename or file
+        if not filename:
+            return "❌ 缺少文件名参数"
+        
+        print_log("Skill", f"[{self.name}] 正在写入文件: {filename}")
+        
+        # 1. 语法预检
+        try:
+            ast.parse(code)
+        except SyntaxError as e:
+            return f"❌ 语法错误 (Line {e.lineno}): {e.msg}"
+        
+        # 2. 物理文件创建
+        if not os.path.exists(filename):
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write("")
+        
+        # 3. VS Code 操作
+        if self._ensure_vscode_focused(filename):
+            # 聚焦编辑区
+            pyautogui.hotkey('ctrl', '1')
+            time.sleep(0.5)
+            
+            # 清空 + 粘贴
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.3)
+            pyautogui.press('backspace')
+            time.sleep(0.3)
+            
+            pyperclip.copy(code)
+            time.sleep(0.5)
+            pyautogui.hotkey('ctrl', 'v')
+            time.sleep(1)
+            
+            # 格式化 + 保存
+            pyautogui.hotkey('shift', 'alt', 'f')
+            time.sleep(1)
+            pyautogui.hotkey('ctrl', 's')
+            time.sleep(0.5)
+            
+            return f"✅ 代码已写入 {filename} 并保存"
+        else:
+            return "❌ 无法聚焦 VS Code 窗口"
+
+# ================= SKILL 2: 运行 Python 文件 =================
+
+class RunPythonSkill(Skill):
+    """
+    Skill: 运行 Python 文件
+    功能: 执行 Python 脚本，自动安装缺失的依赖库
+    """
+    
+    def __init__(self):
+        super().__init__()
+        self.name = "run_python"
+        self.description = """
+        运行指定的 Python 文件。
+        功能:
+        1. 自动检测缺失的第三方库并安装
+        2. 捕获运行输出和错误信息
+        3. 对 GUI 程序特殊处理 (短超时)
+        """
+        self.parameters = {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "要运行的 Python 文件名 (如 snake_game.py)"
+                }
+            },
+            "required": ["filename"]
+        }
+        
+        # 库名映射表
+        self.package_mapping = {
+            'cv2': 'opencv-python',
+            'PIL': 'pillow',
+            'docx': 'python-docx',
+            'sklearn': 'scikit-learn'
+        }
+    
+    def _install_package(self, package: str) -> bool:
+        """安装 Python 包"""
+        try:
+            print_log("Skill", f"正在安装: {package}")
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", package],
+                check=True,
+                capture_output=True
+            )
+            return True
+        except:
+            return False
+    
+    def execute(self, filename: str) -> str:
+        """执行 Python 文件"""
+        print_log("Skill", f"[{self.name}] 正在运行: {filename}")
+        
+        # 1. 文件存在性检查
+        if not os.path.exists(filename):
+            return f"❌ 文件不存在: {filename}"
+        
+        # 2. 读取代码判断是否为 GUI 程序
+        with open(filename, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        is_gui = any(keyword in content for keyword in [
+            'pygame', 'tkinter', 'PyQt', 'PySide', 'wx'
+        ])
+        
+        # 3. 运行程序
+        try:
+            timeout = 6 if is_gui else 30
             result = subprocess.run(
-                [sys.executable, filename], 
-                capture_output=True, 
-                text=True, 
-                timeout=30
+                [sys.executable, filename],
+                capture_output=True,
+                text=True,
+                timeout=timeout
             )
             
-            stdout = result.stdout
             stderr = result.stderr
-            output_msg = ""
-            if stdout: output_msg += f"输出:\n{stdout}\n"
-            if stderr: output_msg += f"报错:\n{stderr}\n"
             
-            # === 核心升级 ===
+            # 4. 处理缺失库
             if "ModuleNotFoundError" in stderr:
                 match = re.search(r"No module named '(\w+)'", stderr)
                 if match:
-                    missing_module = match.group(1)
+                    module_name = match.group(1)
+                    # 查找真实包名
+                    package = self.package_mapping.get(module_name, module_name)
                     
-                    # 1. 检查黑名单
-                    if missing_module in DENY_LIST:
-                        # 【特例】检测是否是 docx 库导致的 Python 2/3 兼容性问题
-                        # 现象：报错缺 exceptions，且报错文件路径包含 docx.py
-                        if missing_module == 'exceptions' and ('docx.py' in stderr or 'docx\\' in stderr or 'docx/' in stderr):
-                             print_system_msg("环境诊断：检测到安装了错误的 'docx' 库（Python 2 旧版）。")
-                             print_system_msg("正在自动卸载 'docx' 并安装正确的 'python-docx'...")
-                             
-                             # 自动清理环境
-                             subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "docx"], capture_output=True)
-                             subprocess.run([sys.executable, "-m", "pip", "install", "python-docx"], check=True)
-                             
-                             print_system_msg("修复完成，正在重试运行...")
-                             continue # 立即重试，不要把错误抛给 LLM
-                        
-                        return result.returncode, f"代码错误：试图导入不存在或已移除的模块 '{missing_module}' (可能是 Python 2/3 兼容性问题)，请重写代码。\n{output_msg}"
-
-                    # 2. 智能映射表
-                    install_name = missing_module
-                    install_map = {
-                        'cv2': 'opencv-python',
-                        'PIL': 'pillow',
-                        'sklearn': 'scikit-learn',
-                        'docx': 'python-docx', # 代码里 import docx，实际装 python-docx
-                        'yaml': 'pyyaml',
-                        'bs4': 'beautifulsoup4'
-                    }
-                    
-                    if missing_module in install_map:
-                        install_name = install_map[missing_module]
-                        
-                    print_system_msg(f"检测到缺失库: {missing_module} (安装名: {install_name})，正在自动安装...")
-                    subprocess.run([sys.executable, "-m", "pip", "install", install_name], check=True)
-                    print_system_msg(f"库 {install_name} 安装完成，准备重试运行...")
-                    continue 
+                    if self._install_package(package):
+                        return f"✅ 已自动安装 {package}，请重新运行"
+                    else:
+                        return f"❌ 安装 {package} 失败"
             
-            if not output_msg: output_msg = "程序运行成功，无输出。"
-            return result.returncode, output_msg
-
+            # 5. 返回运行结果
+            if is_gui and result.returncode != 0:
+                return f"✅ GUI 程序已启动 (测试通过)"
+            
+            output = f"运行结束 (退出码: {result.returncode})\n"
+            if result.stdout:
+                output += f"\n标准输出:\n{result.stdout}"
+            if result.stderr:
+                output += f"\n错误输出:\n{result.stderr}"
+            
+            return output
+            
+        except subprocess.TimeoutExpired:
+            return "✅ GUI 程序已启动 (运行超时保护)" if is_gui else "❌ 运行超时"
         except Exception as e:
-            return -1, f"系统执行错误: {str(e)}"
+            return f"❌ 系统错误: {str(e)}"
+
+# ================= SKILL 3: 列出当前目录文件 =================
+
+class ListFilesSkill(Skill):
+    """
+    Skill: 列出当前目录文件
+    功能: 查看当前工作目录下的所有文件
+    """
+    
+    def __init__(self):
+        super().__init__()
+        self.name = "list_files"
+        self.description = """
+        列出当前工作目录下的所有文件和文件夹。
+        适用场景: 查看有哪些文件、确认文件是否存在。
+        """
+        self.parameters = {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    
+    def execute(self) -> str:
+        """列出当前目录文件"""
+        print_log("Skill", f"[{self.name}] 正在列出当前目录文件")
+        
+        try:
+            files = os.listdir('.')
             
-    return -1, f"多次自动修复失败，最终报错:\n{output_msg}"
+            # 分类
+            python_files = [f for f in files if f.endswith('.py')]
+            other_files = [f for f in files if not f.endswith('.py')]
+            
+            result = "📂 当前目录文件列表:\n\n"
+            
+            if python_files:
+                result += "🐍 Python 文件:\n"
+                for f in python_files:
+                    size = os.path.getsize(f)
+                    result += f"  - {f} ({size} bytes)\n"
+            
+            if other_files:
+                result += "\n📄 其他文件:\n"
+                for f in other_files:
+                    if os.path.isdir(f):
+                        result += f"  - {f}/ (文件夹)\n"
+                    else:
+                        size = os.path.getsize(f)
+                        result += f"  - {f} ({size} bytes)\n"
+            
+            return result if files else "当前目录为空"
+            
+        except Exception as e:
+            return f"❌ 读取失败: {str(e)}"
 
-# ================= 3. 大脑与逻辑处理 =================
+# ================= SKILL 管理器 =================
 
-def extract_code(llm_response):
-    """从 Markdown 块中提取代码和文件名"""
-    # 尝试提取文件名
-    filename_match = re.search(r'#\s*filename:\s*(\w+\.py)', llm_response)
-    filename = filename_match.group(1) if filename_match else "generated_task.py"
+class SkillManager:
+    """
+    Skill 管理器
+    职责: 注册、查找、调用 Skills
+    """
     
-    # 尝试提取代码块
-    code_match = re.search(r'```python(.*?)```', llm_response, re.DOTALL)
-    if code_match:
-        code = code_match.group(1).strip()
-    else:
-        # 如果没有 markdown 标记，假设全文是代码（不太安全，但作为兜底）
-        code = llm_response.replace(filename_match.group(0), "") if filename_match else llm_response
-
-    return filename, code
-
-def agent_loop(task_description):
-    """Agent 主循环"""
+    def __init__(self):
+        self.skills: Dict[str, Skill] = {}
     
-    history = [
-        {"role": "system", "content": """
-你是一个高级 Python 自动化 Agent。
-你的目标是编写代码解决用户的问题。
-每次输出必须包含：
-1. 第一行注释写明文件名，格式：`# filename: xxx.py`
-2. Python 代码块。
+    def register(self, skill: Skill):
+        """注册一个 Skill"""
+        self.skills[skill.name] = skill
+        print_log("System", f"✓ 已注册 Skill: {skill.name}")
+    
+    def get_skill(self, name: str) -> Skill:
+        """获取指定 Skill"""
+        return self.skills.get(name)
+    
+    def list_skills(self) -> list:
+        """获取所有 Skill 定义 (供 LLM 调用)"""
+        return [skill.to_tool_definition() for skill in self.skills.values()]
+    
+    def execute(self, skill_name: str, **kwargs) -> str:
+        """执行指定 Skill（支持参数名自动映射）"""
+        skill = self.get_skill(skill_name)
+        if not skill:
+            return f"❌ Skill 不存在: {skill_name}"
+        
+        # 参数名映射表（兼容 LLM 的常见错误）
+        param_mapping = {
+            'file': 'filename',  # file -> filename
+            'path': 'filename',  # path -> filename
+            'pkg': 'package',    # pkg -> package
+        }
+        
+        # 自动映射参数名
+        mapped_kwargs = {}
+        for key, value in kwargs.items():
+            mapped_key = param_mapping.get(key, key)
+            mapped_kwargs[mapped_key] = value
+        
+        return skill.execute(**mapped_kwargs)
 
-如果代码报错，你需要分析错误原因，并重新输出完整的修正后的代码。
-不要只输出修改的部分，要输出整个文件的代码。
-"""},
-        {"role": "user", "content": task_description}
+# ================= Agent 大脑 =================
+
+class AgentBrain:
+    def __init__(self):
+        self.plan = []
+        self.history = []
+        self.skill_manager = SkillManager()
+        
+        # 注册所有 Skills
+        self.skill_manager.register(VSCodeWriteSkill())
+        self.skill_manager.register(RunPythonSkill())
+        self.skill_manager.register(ListFilesSkill())
+
+# ================= 规划阶段 =================
+
+def generate_plan(brain: AgentBrain, task: str):
+    """生成任务规划"""
+    print_log("Think", "正在进行任务规划...")
+    
+    prompt = f"""
+    任务目标：{task}
+    
+    你是一个务实的系统架构师。
+    请根据任务难度进行拆解：
+    1. 如果是单文件脚本，只生成 1 个步骤。
+    2. 复杂任务才拆分为 2-3 步骤。
+    
+    直接返回 JSON 列表（无 Markdown）：
+    ["Step 1: 编写完整的xxx代码", "Step 2: 运行并测试"]
+    """
+    
+    messages = [
+        {"role": "system", "content": "你是高效的 AI 架构师。"},
+        {"role": "user", "content": prompt}
     ]
-
-    max_retries = 3 # 最大自动纠错次数
-    retry_count = 0
-
-    while retry_count < max_retries:
-        print_system_msg("思考中...")
-        
-        # 1. 调用 LLM
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=history,
-            temperature=0.7
-        )
+    
+    try:
+        response = client.chat.completions.create(model=MODEL_NAME, messages=messages)
         content = response.choices[0].message.content
-        print(f"\033[90m[LLM Thought]\n{content}\033[0m\n")
-
-        # 2. 解析代码
-        filename, code = extract_code(content)
         
-        if not code:
-            print_system_msg("LLM 未返回有效代码，重试...")
-            history.append({"role": "assistant", "content": content})
-            history.append({"role": "user", "content": "请提供有效的 Python 代码块。"})
+        # 清洗
+        content = re.sub(r'```json|```', '', content).strip()
+        if '[' in content and ']' in content:
+            content = content[content.find('['):content.rfind(']')+1]
+        
+        brain.plan = json.loads(content)
+        
+        print_log("Plan", "任务规划:")
+        for step in brain.plan:
+            print(f"  [ ] {step}")
+    except Exception as e:
+        print_log("Error", f"规划失败: {e}")
+        brain.plan = [f"Step 1: 完成 {task}"]
+
+# ================= 执行阶段 =================
+
+SYSTEM_PROMPT = """
+你是一个 Python 全栈工程师 Agent，拥有以下技能:
+{skills}
+
+**工作规范:**
+1. 必须使用 JSON 格式调用工具，不得直接输出代码
+2. 每次写代码必须提供完整代码（不支持增量修改）
+3. 先编写代码，再运行测试
+4. **重要**: 调用工具时，参数名必须严格匹配 parameters 定义！
+
+**JSON 格式:**
+{{
+    "thought": "我的思考过程...",
+    "action": "skill_name",
+    "args": {{"param_name": "value"}}
+}}
+
+**示例:**
+调用 vscode_write 时必须用 "filename" 而不是 "file":
+{{
+    "action": "vscode_write",
+    "args": {{"filename": "game.py", "code": "import pygame..."}}
+}}
+"""
+
+def parse_agent_response(content: str) -> dict:
+    """解析 Agent 回复"""
+    try:
+        # 策略 1: ```json ... ```
+        match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+        if match:
+            return json.loads(match.group(1).strip())
+        
+        # 策略 2: ``` ... ```
+        match = re.search(r'```\s*(.*?)\s*```', content, re.DOTALL)
+        if match:
+            json_str = match.group(1).strip()
+            if json_str.startswith('{'):
+                return json.loads(json_str)
+        
+        # 策略 3: 裸 JSON (栈匹配)
+        start = content.find('{')
+        if start == -1:
+            return None
+        
+        stack = 0
+        for i in range(start, len(content)):
+            if content[i] == '{':
+                stack += 1
+            elif content[i] == '}':
+                stack -= 1
+                if stack == 0:
+                    return json.loads(content[start:i+1])
+        
+        return None
+    except:
+        return None
+
+def execute_plan(brain: AgentBrain, task: str):
+    """执行任务"""
+    # 构建 Prompt
+    skills_desc = "\n".join([
+        f"- {s['name']}: {s['description']}" 
+        for s in brain.skill_manager.list_skills()
+    ])
+    
+    system_prompt = SYSTEM_PROMPT.format(skills=skills_desc)
+    plan_str = "\n".join(brain.plan)
+    
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"任务: {task}\n\n计划:\n{plan_str}\n\n请开始执行。"}
+    ]
+    
+    max_turns = 15
+    turn = 0
+    
+    while turn < max_turns:
+        turn += 1
+        print_log("Agent", f"执行中 (Round {turn})...")
+        
+        try:
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages
+            )
+        except Exception as e:
+            print_log("Error", f"API 错误: {e}")
+            time.sleep(3)
             continue
-
-        # 3. 视觉动作：打开 VS Code 并敲代码
-        open_vscode_and_type(filename, code)
-
-        # 4. 运行验证
-        return_code, output = run_python_file(filename)
-        print(f"--- 运行结果 ---\n{output}")
-
-        if return_code == 0 and "Error" not in output and "Traceback" not in output:
-            print_system_msg("任务完成！代码运行成功。")
-            break
+        
+        content = response.choices[0].message.content
+        messages.append({"role": "assistant", "content": content})
+        
+        # 解析动作
+        action_data = parse_agent_response(content)
+        
+        if action_data:
+            # 执行 Skill
+            thought = action_data.get("thought", "")
+            action = action_data.get("action")
+            args = action_data.get("args", {})
+            
+            print_log("Think", thought[:100])
+            print_log("Agent", f"调用 Skill -> {action}")
+            
+            result = brain.skill_manager.execute(action, **args)
+            print_log("Tool", result[:200])
+            
+            messages.append({"role": "user", "content": f"[工具输出]:\n{result}"})
         else:
-            print_system_msg(f"检测到错误，准备进行第 {retry_count+1} 次自我修复...")
-            retry_count += 1
+            # 说话
+            print_log("Agent", content[:150])
             
-            # 将错误信息喂回给 LLM
-            history.append({"role": "assistant", "content": content})
-            error_feedback = f"代码运行报错了，请修复。报错信息如下：\n{output}\n请重新输出完整的修复后的代码。"
-            history.append({"role": "user", "content": error_feedback})
+            if "完成" in content or "成功" in content:
+                print_log("System", "✅ 任务完成")
+                break
             
-    if retry_count >= max_retries:
-        print_system_msg("达到最大重试次数，任务失败。")
+            messages.append({
+                "role": "user",
+                "content": "请输出 JSON 格式的工具调用指令！"
+            })
+    
+    if turn >= max_turns:
+        print_log("Error", "达到最大轮数")
 
-# ================= 入口 =================
+# ================= 主程序 =================
 
 if __name__ == "__main__":
-    # 示例任务：你可以改成任何你想要的
-    user_task = "在本目录下写一个python脚本，写一份工作每周汇报word文档然后保存到本地下，我是干人事和财务的，你随便编，最后打印'Done'。"
+    brain = AgentBrain()
     
-    print_system_msg(f"接收任务: {user_task}")
-    print_system_msg("请注意：接下来的几秒钟不要移动鼠标！")
-    time.sleep(3) # 给用户一点反应时间
+    # 任务设定
+    user_task = "帮我写一个贪吃蛇游戏，要有分数显示，碰到墙壁游戏结束，写完后运行测试"
     
-    agent_loop(user_task)
+    print_log("System", f"接收任务: {user_task}")
+    print_log("System", "已加载 Skills:")
+    for skill_name in brain.skill_manager.skills.keys():
+        print(f"  ✓ {skill_name}")
+    
+    print_log("System", "请双手离开键盘鼠标...")
+    time.sleep(2)
+    
+    # 执行
+    generate_plan(brain, user_task)
+    execute_plan(brain, user_task)
