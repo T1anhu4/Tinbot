@@ -10,8 +10,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from openai import OpenAI
 from typing import Dict
 
-# 导入所有Skills
-from skills import VSCodeWriteSkill, RunPythonSkill, ListFilesSkill
+# 导入自动发现函数
+from skills import auto_discover_skills
 
 # ================= 配置区域 =================
 class Settings(BaseSettings):
@@ -110,10 +110,15 @@ class AgentBrain:
     
     def _register_skills(self):
         """注册所有可用的Skills"""
-        self.skill_manager.register(VSCodeWriteSkill())
-        self.skill_manager.register(RunPythonSkill())
-        self.skill_manager.register(ListFilesSkill())
-
+        print_log("System", "正在扫描并加载Skills...")
+        # 调用自动发现
+        skills = auto_discover_skills()
+        # 循环注册
+        for skill in skills:
+            self.skill_manager.register(skill)     
+        if not skills:
+            print_log("Error", "未发现任何Skill，请检查skills目录！")
+            
 # ================= 规划阶段 =================
 
 def generate_plan(brain: AgentBrain, task: str):

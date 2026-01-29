@@ -1,6 +1,6 @@
 """
 Skill Base Class
-所有 Skill 都必须继承此基类
+所有Skill都必须继承此基类
 """
 
 from typing import Dict, Any
@@ -8,12 +8,12 @@ from typing import Dict, Any
 
 class Skill:
     """
-    Skill 基类 - 所有技能都继承自这个类
+    Skill基类 - 所有技能都继承自这个类
     
-    每个 Skill 必须实现:
+    每个Skill必须实现:
     1. name: 技能名称
-    2. description: 技能描述 (给 LLM 看的)
-    3. parameters: 参数定义 (JSON Schema 格式)
+    2. description: 技能描述
+    3. parameters: 参数定义(JSON Schema格式)
     4. execute: 执行逻辑
     """
     
@@ -27,7 +27,7 @@ class Skill:
         执行技能
         
         Args:
-            **kwargs: 动态参数，由 parameters 定义
+            **kwargs: 动态参数，由parameters定义
             
         Returns:
             str: 执行结果（必须是字符串）
@@ -36,10 +36,10 @@ class Skill:
     
     def to_tool_definition(self) -> Dict[str, Any]:
         """
-        转换为 LLM 可理解的工具定义格式
+        转换为LLM可理解的工具定义格式
         
         Returns:
-            dict: 包含 name, description, parameters 的字典
+            dict: 包含name, description, parameters的字典
         """
         return {
             "name": self.name,
