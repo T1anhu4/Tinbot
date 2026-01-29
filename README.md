@@ -5,14 +5,21 @@ A multi-skilled agent with planning and reflection capabilities, powered by Qwen
 
 ```
 Tinbot/
-├── agent.py                    # 主程序入口
-├── skills/                     # Skills 目录（模块化技能）
+├── agent.py                   # 主程序入口
+├── state.py                   # 状态管理程序
+├── .env                       # 全局配置
+├── skills/                    # Skills 目录（模块化技能）
 │   ├── __init__.py            # 包初始化文件
 │   ├── base.py                # Skill 基类
 │   ├── vscode_write.py        # VS Code 写代码 Skill
 │   ├── run_python.py          # 运行 Python Skill
-│   └── list_files.py          # 列出文件 Skill
-└── README.md                   # 本文档
+│   ├── list_files.py          # 列出文件 Skill
+│   ├── computer_control.py    # 电脑基础操作Skill
+│   ├── email_visual.py        # 邮件相关操作Skill
+│   └── vision_engine.py       # 多模态识别Skill
+├── memory/                    # Memory 目录（状态管理数据库保存路径）
+│   ├── state.db               # 状态sqllite数据库
+└── README.md    
 ```
 
 ## 🎯 架构设计
