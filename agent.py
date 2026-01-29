@@ -1,15 +1,17 @@
+"""
+Modular AI Agent with Pluggable Skills
+模块化 AI Agent - 可插拔技能架构
+"""
+
 import sys
-import os
 import time
 import re
-import subprocess
-import pyautogui
-import pyperclip
-import pygetwindow as gw
-from openai import OpenAI
 import json
-import ast
-from typing import Dict, Any, Callable
+from openai import OpenAI
+from typing import Dict
+
+# 导入所有 Skills
+from skills import VSCodeWriteSkill, RunPythonSkill, ListFilesSkill
 
 # ================= 配置区域 =================
 API_BASE = "http://120.24.173.129:3000/api/v1"
@@ -17,11 +19,11 @@ API_KEY = "fastgpt-xEnWOUtLbvamg9kOtwtWYQpLzwNovtWLGY9WuibYKngIyYdSe2pmvUjpiM8LU
 MODEL_NAME = "qwen-max"
 
 client = OpenAI(api_key=API_KEY, base_url=API_BASE)
-pyautogui.FAILSAFE = True 
 
 # ================= 工具函数 =================
 
 def print_log(role, msg):
+    """带颜色的日志输出"""
     colors = {
         "System": "\033[95m", "Tool": "\033[94m", "Agent": "\033[92m", 
         "Error": "\033[91m", "Think": "\033[93m", "Plan": "\033[96m", 
@@ -29,301 +31,7 @@ def print_log(role, msg):
     }
     print(f"{colors.get(role, colors['Reset'])}[{role}] {msg}{colors['Reset']}")
 
-# ================= SKILL 基类 =================
-
-class Skill:
-    """
-    Skill 基类 - 所有技能都继承自这个类
-    每个 Skill 必须实现:
-    1. name: 技能名称
-    2. description: 技能描述 (给 LLM 看的)
-    3. parameters: 参数定义 (JSON Schema 格式)
-    4. execute: 执行逻辑
-    """
-    
-    def __init__(self):
-        self.name = "base_skill"
-        self.description = "Base skill class"
-        self.parameters = {}
-    
-    def execute(self, **kwargs) -> str:
-        """执行技能，返回结果字符串"""
-        raise NotImplementedError("Subclass must implement execute()")
-    
-    def to_tool_definition(self) -> Dict:
-        """转换为 LLM 可理解的工具定义格式"""
-        return {
-            "name": self.name,
-            "description": self.description,
-            "parameters": self.parameters
-        }
-
-# ================= SKILL 1: VS Code 写代码 =================
-
-class VSCodeWriteSkill(Skill):
-    """
-    Skill: VS Code 写代码
-    功能: 通过 GUI 自动化将代码写入 VS Code
-    """
-    
-    def __init__(self):
-        super().__init__()
-        self.name = "vscode_write"
-        self.description = """
-        使用 VS Code 编辑器写入代码文件。
-        适用场景: 创建新的 Python 脚本、修改代码文件。
-        注意: 必须提供完整的代码，不支持增量修改。
-        """
-        self.parameters = {
-            "type": "object",
-            "properties": {
-                "filename": {
-                    "type": "string",
-                    "description": "要创建/编辑的文件名 (如 game.py)"
-                },
-                "code": {
-                    "type": "string",
-                    "description": "完整的代码内容"
-                }
-            },
-            "required": ["filename", "code"]
-        }
-    
-    def _ensure_vscode_focused(self, filename: str) -> bool:
-        """确保 VS Code 窗口处于激活状态"""
-        subprocess.Popen(f'code "{filename}"', shell=True)
-        time.sleep(2)
-        
-        target_window = None
-        for _ in range(5):
-            windows = gw.getWindowsWithTitle('Visual Studio Code')
-            if windows:
-                target_window = windows[0]
-                break
-            time.sleep(1)
-        
-        if not target_window:
-            return False
-        
-        try:
-            if target_window.isMinimized:
-                target_window.restore()
-            target_window.activate()
-            time.sleep(0.5)
-            return True
-        except:
-            return False
-    
-    def execute(self, code: str, filename: str = None, file: str = None) -> str:
-        """执行写代码操作（支持 filename 或 file 参数）"""
-        # 兼容两种参数名
-        filename = filename or file
-        if not filename:
-            return "❌ 缺少文件名参数"
-        
-        print_log("Skill", f"[{self.name}] 正在写入文件: {filename}")
-        
-        # 1. 语法预检
-        try:
-            ast.parse(code)
-        except SyntaxError as e:
-            return f"❌ 语法错误 (Line {e.lineno}): {e.msg}"
-        
-        # 2. 物理文件创建
-        if not os.path.exists(filename):
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write("")
-        
-        # 3. VS Code 操作
-        if self._ensure_vscode_focused(filename):
-            # 聚焦编辑区
-            pyautogui.hotkey('ctrl', '1')
-            time.sleep(0.5)
-            
-            # 清空 + 粘贴
-            pyautogui.hotkey('ctrl', 'a')
-            time.sleep(0.3)
-            pyautogui.press('backspace')
-            time.sleep(0.3)
-            
-            pyperclip.copy(code)
-            time.sleep(0.5)
-            pyautogui.hotkey('ctrl', 'v')
-            time.sleep(1)
-            
-            # 格式化 + 保存
-            pyautogui.hotkey('shift', 'alt', 'f')
-            time.sleep(1)
-            pyautogui.hotkey('ctrl', 's')
-            time.sleep(0.5)
-            
-            return f"✅ 代码已写入 {filename} 并保存"
-        else:
-            return "❌ 无法聚焦 VS Code 窗口"
-
-# ================= SKILL 2: 运行 Python 文件 =================
-
-class RunPythonSkill(Skill):
-    """
-    Skill: 运行 Python 文件
-    功能: 执行 Python 脚本，自动安装缺失的依赖库
-    """
-    
-    def __init__(self):
-        super().__init__()
-        self.name = "run_python"
-        self.description = """
-        运行指定的 Python 文件。
-        功能:
-        1. 自动检测缺失的第三方库并安装
-        2. 捕获运行输出和错误信息
-        3. 对 GUI 程序特殊处理 (短超时)
-        """
-        self.parameters = {
-            "type": "object",
-            "properties": {
-                "filename": {
-                    "type": "string",
-                    "description": "要运行的 Python 文件名 (如 snake_game.py)"
-                }
-            },
-            "required": ["filename"]
-        }
-        
-        # 库名映射表
-        self.package_mapping = {
-            'cv2': 'opencv-python',
-            'PIL': 'pillow',
-            'docx': 'python-docx',
-            'sklearn': 'scikit-learn'
-        }
-    
-    def _install_package(self, package: str) -> bool:
-        """安装 Python 包"""
-        try:
-            print_log("Skill", f"正在安装: {package}")
-            subprocess.run(
-                [sys.executable, "-m", "pip", "install", package],
-                check=True,
-                capture_output=True
-            )
-            return True
-        except:
-            return False
-    
-    def execute(self, filename: str) -> str:
-        """执行 Python 文件"""
-        print_log("Skill", f"[{self.name}] 正在运行: {filename}")
-        
-        # 1. 文件存在性检查
-        if not os.path.exists(filename):
-            return f"❌ 文件不存在: {filename}"
-        
-        # 2. 读取代码判断是否为 GUI 程序
-        with open(filename, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        is_gui = any(keyword in content for keyword in [
-            'pygame', 'tkinter', 'PyQt', 'PySide', 'wx'
-        ])
-        
-        # 3. 运行程序
-        try:
-            timeout = 6 if is_gui else 30
-            result = subprocess.run(
-                [sys.executable, filename],
-                capture_output=True,
-                text=True,
-                timeout=timeout
-            )
-            
-            stderr = result.stderr
-            
-            # 4. 处理缺失库
-            if "ModuleNotFoundError" in stderr:
-                match = re.search(r"No module named '(\w+)'", stderr)
-                if match:
-                    module_name = match.group(1)
-                    # 查找真实包名
-                    package = self.package_mapping.get(module_name, module_name)
-                    
-                    if self._install_package(package):
-                        return f"✅ 已自动安装 {package}，请重新运行"
-                    else:
-                        return f"❌ 安装 {package} 失败"
-            
-            # 5. 返回运行结果
-            if is_gui and result.returncode != 0:
-                return f"✅ GUI 程序已启动 (测试通过)"
-            
-            output = f"运行结束 (退出码: {result.returncode})\n"
-            if result.stdout:
-                output += f"\n标准输出:\n{result.stdout}"
-            if result.stderr:
-                output += f"\n错误输出:\n{result.stderr}"
-            
-            return output
-            
-        except subprocess.TimeoutExpired:
-            return "✅ GUI 程序已启动 (运行超时保护)" if is_gui else "❌ 运行超时"
-        except Exception as e:
-            return f"❌ 系统错误: {str(e)}"
-
-# ================= SKILL 3: 列出当前目录文件 =================
-
-class ListFilesSkill(Skill):
-    """
-    Skill: 列出当前目录文件
-    功能: 查看当前工作目录下的所有文件
-    """
-    
-    def __init__(self):
-        super().__init__()
-        self.name = "list_files"
-        self.description = """
-        列出当前工作目录下的所有文件和文件夹。
-        适用场景: 查看有哪些文件、确认文件是否存在。
-        """
-        self.parameters = {
-            "type": "object",
-            "properties": {},
-            "required": []
-        }
-    
-    def execute(self) -> str:
-        """列出当前目录文件"""
-        print_log("Skill", f"[{self.name}] 正在列出当前目录文件")
-        
-        try:
-            files = os.listdir('.')
-            
-            # 分类
-            python_files = [f for f in files if f.endswith('.py')]
-            other_files = [f for f in files if not f.endswith('.py')]
-            
-            result = "📂 当前目录文件列表:\n\n"
-            
-            if python_files:
-                result += "🐍 Python 文件:\n"
-                for f in python_files:
-                    size = os.path.getsize(f)
-                    result += f"  - {f} ({size} bytes)\n"
-            
-            if other_files:
-                result += "\n📄 其他文件:\n"
-                for f in other_files:
-                    if os.path.isdir(f):
-                        result += f"  - {f}/ (文件夹)\n"
-                    else:
-                        size = os.path.getsize(f)
-                        result += f"  - {f} ({size} bytes)\n"
-            
-            return result if files else "当前目录为空"
-            
-        except Exception as e:
-            return f"❌ 读取失败: {str(e)}"
-
-# ================= SKILL 管理器 =================
+# ================= Skill 管理器 =================
 
 class SkillManager:
     """
@@ -332,14 +40,14 @@ class SkillManager:
     """
     
     def __init__(self):
-        self.skills: Dict[str, Skill] = {}
+        self.skills = {}
     
-    def register(self, skill: Skill):
+    def register(self, skill):
         """注册一个 Skill"""
         self.skills[skill.name] = skill
         print_log("System", f"✓ 已注册 Skill: {skill.name}")
     
-    def get_skill(self, name: str) -> Skill:
+    def get_skill(self, name: str):
         """获取指定 Skill"""
         return self.skills.get(name)
     
@@ -348,7 +56,16 @@ class SkillManager:
         return [skill.to_tool_definition() for skill in self.skills.values()]
     
     def execute(self, skill_name: str, **kwargs) -> str:
-        """执行指定 Skill（支持参数名自动映射）"""
+        """
+        执行指定 Skill（支持参数名自动映射）
+        
+        Args:
+            skill_name: Skill 名称
+            **kwargs: 参数
+            
+        Returns:
+            str: 执行结果
+        """
         skill = self.get_skill(skill_name)
         if not skill:
             return f"❌ Skill 不存在: {skill_name}"
@@ -371,12 +88,18 @@ class SkillManager:
 # ================= Agent 大脑 =================
 
 class AgentBrain:
+    """Agent 核心 - 管理规划和技能"""
+    
     def __init__(self):
         self.plan = []
         self.history = []
         self.skill_manager = SkillManager()
         
         # 注册所有 Skills
+        self._register_skills()
+    
+    def _register_skills(self):
+        """注册所有可用的 Skills"""
         self.skill_manager.register(VSCodeWriteSkill())
         self.skill_manager.register(RunPythonSkill())
         self.skill_manager.register(ListFilesSkill())
@@ -384,7 +107,13 @@ class AgentBrain:
 # ================= 规划阶段 =================
 
 def generate_plan(brain: AgentBrain, task: str):
-    """生成任务规划"""
+    """
+    生成任务规划
+    
+    Args:
+        brain: Agent 大脑
+        task: 用户任务
+    """
     print_log("Think", "正在进行任务规划...")
     
     prompt = f"""
@@ -434,12 +163,21 @@ SYSTEM_PROMPT = """
 3. 先编写代码，再运行测试
 4. **重要**: 调用工具时，参数名必须严格匹配 parameters 定义！
 
+**任务完成标准:**
+- 对于查询类任务（如"列出文件"、"查看xxx"）：调用一次工具获得结果后，直接总结并说"任务完成"
+- 对于创建类任务（如"写代码"、"生成文件"）：完成创建和测试后说"任务完成"
+- **禁止重复调用同一个工具**，除非上次调用失败
+
 **JSON 格式:**
 {{
     "thought": "我的思考过程...",
     "action": "skill_name",
     "args": {{"param_name": "value"}}
 }}
+
+**结束格式:**
+完成任务后，直接说：
+"任务完成。[简短总结]"
 
 **示例:**
 调用 vscode_write 时必须用 "filename" 而不是 "file":
@@ -450,7 +188,15 @@ SYSTEM_PROMPT = """
 """
 
 def parse_agent_response(content: str) -> dict:
-    """解析 Agent 回复"""
+    """
+    解析 Agent 回复中的 JSON 指令
+    
+    Args:
+        content: Agent 的回复内容
+        
+    Returns:
+        dict: 解析后的 JSON 对象，失败返回 None
+    """
     try:
         # 策略 1: ```json ... ```
         match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
@@ -483,7 +229,13 @@ def parse_agent_response(content: str) -> dict:
         return None
 
 def execute_plan(brain: AgentBrain, task: str):
-    """执行任务"""
+    """
+    执行任务规划
+    
+    Args:
+        brain: Agent 大脑
+        task: 用户任务
+    """
     # 构建 Prompt
     skills_desc = "\n".join([
         f"- {s['name']}: {s['description']}" 
@@ -500,6 +252,8 @@ def execute_plan(brain: AgentBrain, task: str):
     
     max_turns = 15
     turn = 0
+    last_action = None  # 记录上一次的动作
+    repeat_count = 0    # 重复计数
     
     while turn < max_turns:
         turn += 1
@@ -521,31 +275,80 @@ def execute_plan(brain: AgentBrain, task: str):
         # 解析动作
         action_data = parse_agent_response(content)
         
-        if action_data:
+        if action_data and action_data.get("action"):
             # 执行 Skill
             thought = action_data.get("thought", "")
             action = action_data.get("action")
             args = action_data.get("args", {})
             
-            print_log("Think", thought[:100])
+            print_log("Think", thought[:100] if thought else "执行中...")
             print_log("Agent", f"调用 Skill -> {action}")
             
             result = brain.skill_manager.execute(action, **args)
-            print_log("Tool", result[:200])
+            
+            # 检测重复调用
+            if action == last_action:
+                repeat_count += 1
+                if repeat_count >= 2:
+                    print_log("System", "⚠️ 检测到重复调用，强制终止")
+                    messages.append({
+                        "role": "user",
+                        "content": "你已经调用过这个工具了！请总结任务结果，不要再重复调用。"
+                    })
+                    last_action = None
+                    repeat_count = 0
+                    continue
+            else:
+                last_action = action
+                repeat_count = 0
+            
+            # 智能显示结果（避免刷屏，但不误导 LLM）
+            if len(result) > 500:
+                lines = result.split('\n')
+                if len(lines) > 15:
+                    preview = '\n'.join(lines[:15]) + f"\n... (共 {len(lines)} 行)"
+                    print_log("Tool", preview)
+                else:
+                    print_log("Tool", result)
+            else:
+                print_log("Tool", result)
             
             messages.append({"role": "user", "content": f"[工具输出]:\n{result}"})
         else:
             # 说话
-            print_log("Agent", content[:150])
+            print_log("Agent", content[:200] if len(content) > 200 else content)
             
-            if "完成" in content or "成功" in content:
+            # 改进的任务完成检测
+            finish_keywords = [
+                "任务完成", "完成了", "已完成", "全部完成",
+                "执行完毕", "操作完毕", "运行成功",
+                "以上就是", "这就是全部", "就是这些"
+            ]
+            
+            # 特殊情况：对于简单查询任务，如果 Agent 已经回答了问题，就结束
+            is_simple_query = any(kw in task for kw in ["什么文件", "有哪些", "列出", "查看"])
+            has_answered = any(kw in content for kw in ["如下", "以下", "列表", "文件夹"])
+            
+            should_finish = (
+                any(kw in content for kw in finish_keywords) or
+                (is_simple_query and has_answered and turn > 2)
+            )
+            
+            if should_finish:
                 print_log("System", "✅ 任务完成")
                 break
             
-            messages.append({
-                "role": "user",
-                "content": "请输出 JSON 格式的工具调用指令！"
-            })
+            # 防止无效循环
+            if turn > 5 and not action_data:
+                messages.append({
+                    "role": "user",
+                    "content": "任务已完成，请直接说'任务完成'以结束对话。不要再输出工具调用指令。"
+                })
+            else:
+                messages.append({
+                    "role": "user",
+                    "content": "请输出 JSON 格式的工具调用指令！"
+                })
     
     if turn >= max_turns:
         print_log("Error", "达到最大轮数")
@@ -556,7 +359,7 @@ if __name__ == "__main__":
     brain = AgentBrain()
     
     # 任务设定
-    user_task = "帮我写一个贪吃蛇游戏，要有分数显示，碰到墙壁游戏结束，写完后运行测试"
+    user_task = "当前目录下有什么文件"
     
     print_log("System", f"接收任务: {user_task}")
     print_log("System", "已加载 Skills:")
