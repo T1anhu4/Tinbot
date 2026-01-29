@@ -3,15 +3,22 @@ Modular AI Agent with Pluggable Skills
 模块化 AI Agent - 可插拔技能架构
 """
 import sys
+from art import tprint
 import time
 import re
+import os
 import json
+import uuid
+import datetime
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from openai import OpenAI
 from typing import Dict
 
 # 导入自动发现函数
 from skills import auto_discover_skills
+
+# 导入状态数据管理器
+from state import StateManager
 
 # ================= 配置区域 =================
 class Settings(BaseSettings):
@@ -27,6 +34,7 @@ class Settings(BaseSettings):
     )
 
 settings = Settings()
+state_manager = StateManager()
 
 client = OpenAI(api_key=settings.API_KEY, base_url=settings.API_URL)
 
@@ -105,6 +113,7 @@ class AgentBrain:
         self.history = []
         self.skill_manager = SkillManager()
         
+        self.current_step = 0
         # 注册所有Skills
         self._register_skills()
     
@@ -243,15 +252,34 @@ def parse_agent_response(content: str) -> dict:
     except:
         return None
 
-def execute_plan(brain: AgentBrain, task: str):
+def execute_plan(brain: AgentBrain, task: str, session_id: str):
     """
-    执行任务规划
+    执行任务规划(已集成SQLite自动存档与恢复功能)
     
     Args:
         brain: Agent大脑
         task: 用户任务
+        session_id: 当前会话ID(用于存档)
     """
-    # 构建Prompt
+    
+    # ================= 1. 尝试恢复进度 =================
+    # 从数据库读取存档
+    saved_data = state_manager.load_session(session_id)
+    
+    # 如果有存档且状态是running，说明是意外断开，需要恢复
+    if saved_data and saved_data['status'] == 'running':
+        print_log("System", f"🔄 检测到存档 (ID: {session_id})，正在恢复现场...")
+        brain.plan = saved_data['plan']
+        brain.history = saved_data['history']
+        brain.current_step = saved_data['current_step']
+        
+        # 这里的turn可以大致对应current_step，防止轮数重置
+        start_turn = brain.current_step
+        print_log("System", f"⏩ 已恢复历史记录 {len(brain.history)} 条，继续执行...")
+    else:
+        start_turn = 0
+
+    # ================= 2. 构建初始Prompt =================
     skills_desc = "\n".join([
         f"- {s['name']}: {s['description']}" 
         for s in brain.skill_manager.list_skills()
@@ -260,18 +288,29 @@ def execute_plan(brain: AgentBrain, task: str):
     system_prompt = SYSTEM_PROMPT.format(skills=skills_desc)
     plan_str = "\n".join(brain.plan)
     
+    # 初始化消息列表
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"任务: {task}\n\n计划:\n{plan_str}\n\n请开始执行。"}
     ]
     
+    # [关键] 如果是恢复模式，必须把之前的历史对话加回去，不然Agent会失忆
+    if brain.history:
+        # 过滤掉可能的重复 system/user prompt，只追加交互历史
+        for msg in brain.history:
+            messages.append(msg)
+    
+    # ================= 3. 执行循环 =================
     max_turns = 15
-    turn = 0
-    last_action = None  # 记录上一次的动作
-    repeat_count = 0    # 重复计数
+    turn = start_turn # 从中断的地方开始计数
+    last_action = None
+    repeat_count = 0
     
     while turn < max_turns:
         turn += 1
+        # 更新大脑里的步数，用于存档
+        brain.current_step = turn 
+        
         print_log("Agent", f"执行中 (Round {turn})...")
         
         try:
@@ -285,13 +324,17 @@ def execute_plan(brain: AgentBrain, task: str):
             continue
         
         content = response.choices[0].message.content
+        
+        # 记录到messages(用于下次发给LLM)
         messages.append({"role": "assistant", "content": content})
+        # 记录到brain.history(用于存数据库)
+        brain.history.append({"role": "assistant", "content": content})
         
         # 解析动作
         action_data = parse_agent_response(content)
         
         if action_data and action_data.get("action"):
-            # 执行Skill
+            # --- 执行Skill ---
             thought = action_data.get("thought", "")
             action = action_data.get("action")
             args = action_data.get("args", {})
@@ -301,15 +344,14 @@ def execute_plan(brain: AgentBrain, task: str):
             
             result = brain.skill_manager.execute(action, **args)
             
-            # 检测重复调用
+            # --- 检测重复调用 ---
             if action == last_action:
                 repeat_count += 1
                 if repeat_count >= 2:
-                    print_log("System", "⚠️检测到重复调用，强制终止")
-                    messages.append({
-                        "role": "user",
-                        "content": "你已经调用过这个工具了！请总结任务结果，不要再重复调用。"
-                    })
+                    print_log("System", "检测到重复调用，强制终止")
+                    warning_msg = "你已经调用过这个工具了！请总结任务结果，不要再重复调用。"
+                    messages.append({"role": "user", "content": warning_msg})
+                    brain.history.append({"role": "user", "content": warning_msg})
                     last_action = None
                     repeat_count = 0
                     continue
@@ -317,7 +359,7 @@ def execute_plan(brain: AgentBrain, task: str):
                 last_action = action
                 repeat_count = 0
             
-            # 智能显示结果（避免刷屏，但不误导LLM）
+            # --- 显示结果 ---
             if len(result) > 500:
                 lines = result.split('\n')
                 if len(lines) > 15:
@@ -328,19 +370,25 @@ def execute_plan(brain: AgentBrain, task: str):
             else:
                 print_log("Tool", result)
             
-            messages.append({"role": "user", "content": f"[工具输出]:\n{result}"})
+            # 记录工具结果
+            tool_msg = f"[工具输出]:\n{result}"
+            messages.append({"role": "user", "content": tool_msg})
+            brain.history.append({"role": "user", "content": tool_msg})
+
+            # 【存档点 1】动作执行完，立刻存档(状态: running) 
+            state_manager.save_session(session_id, task, brain, status="running")
+            
         else:
-            # 说话
+            # --- 纯对话/总结 ---
             print_log("Agent", content[:200] if len(content) > 200 else content)
             
-            # 改进的任务完成检测
+            # 任务完成检测
             finish_keywords = [
                 "任务完成", "完成了", "已完成", "全部完成",
                 "执行完毕", "操作完毕", "运行成功",
                 "以上就是", "这就是全部", "就是这些"
             ]
             
-            # 特殊情况：对于简单查询任务，如果Agent已经回答了问题，就结束
             is_simple_query = any(kw in task for kw in ["什么文件", "有哪些", "列出", "查看"])
             has_answered = any(kw in content for kw in ["如下", "以下", "列表", "文件夹"])
             
@@ -350,20 +398,20 @@ def execute_plan(brain: AgentBrain, task: str):
             )
             
             if should_finish:
-                print_log("System", "✅任务完成")
+                print_log("System", "任务完成!")
+                
+                # 【存档点 2】任务结束，标记存档 (状态:done) 
+                state_manager.save_session(session_id, task, brain, status="done")
                 break
             
             # 防止无效循环
             if turn > 5 and not action_data:
-                messages.append({
-                    "role": "user",
-                    "content": "任务已完成，请直接说'任务完成'以结束对话。不要再输出工具调用指令。"
-                })
+                hint_msg = "任务已完成，请直接说'任务完成'以结束对话。不要再输出工具调用指令。"
+                messages.append({"role": "user", "content": hint_msg})
+                brain.history.append({"role": "user", "content": hint_msg})
             else:
-                messages.append({
-                    "role": "user",
-                    "content": "请输出JSON格式的工具调用指令！"
-                })
+                hint_msg = "请输出JSON格式的工具调用指令！"
+                messages.append({"role": "user", "content": hint_msg})
     
     if turn >= max_turns:
         print_log("Error", "达到最大轮数")
@@ -371,19 +419,67 @@ def execute_plan(brain: AgentBrain, task: str):
 # ================= 主程序 =================
 
 if __name__ == "__main__":
+    print("\n")
+    tprint("TINBOT")
     brain = AgentBrain()
-    
-    # 任务设定
-    user_task = "当前目录下有什么文件"
-    
-    print_log("System", f"接收任务: {user_task}")
+    state_manager = StateManager()
+
+    # --- 启动菜单逻辑 ---
+    print_log("System", "Tinbot启动中...")
     print_log("System", "已加载Skills:")
     for skill_name in brain.skill_manager.skills.keys():
-        print(f"  ✓ {skill_name}")
+        print(f"  ✓ [\033[32mDone\033[0m] {skill_name}")
+    print("\n\n")
     
-    print_log("System", "请双手离开键盘鼠标...")
-    time.sleep(2)
+    # 1. 看看有没有没干完的活
+    unfinished_tasks = state_manager.list_running_sessions()
     
-    # 执行
-    generate_plan(brain, user_task)
-    execute_plan(brain, user_task)
+    current_session_id = ""
+    user_task = ""
+
+    if unfinished_tasks:
+        print_log("System", "=== 发现未完成的任务 ===")
+        for idx, (sid, content, step) in enumerate(unfinished_tasks):
+            print_log("System", f" [{idx+1}] 任务: {content} (进度: Step {step}) | ID: {sid[-6:]}...")
+        print_log("System", " [N]开启新任务")
+        
+        choice = input("\n请选择(输入序号恢复，输入 N 新建): ").strip().upper()
+        
+        if choice.isdigit() and 1 <= int(choice) <= len(unfinished_tasks):
+            # === 恢复旧任务 ===
+            selected_task = unfinished_tasks[int(choice)-1]
+            current_session_id = selected_task[0]
+            user_task = selected_task[1]
+            print_log("System", "正在恢复任务: {user_task}...")
+            
+            # 从数据库加载脑子
+            saved_data = state_manager.load_session(current_session_id)
+            brain.plan = saved_data['plan']
+            brain.history = saved_data['history']
+            brain.current_step = saved_data['current_step']
+            
+        else:
+            # === 开启新任务 ===
+            # 生成一个唯一的ID，比如 "session_20260129_103055"
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            current_session_id = f"sess_{timestamp}_{uuid.uuid4().hex[:4]}"
+            
+            user_task = input("\n请输入新任务目标: ")
+    else:
+        # 没有旧任务，直接新建
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        current_session_id = f"sess_{timestamp}_{uuid.uuid4().hex[:4]}"
+        user_task = input("请输入新任务目标: ")
+
+    # --- 开始执行 ---
+    print_log("System", "当前Session ID: {current_session_id}")
+    print_log("System", "开始执行! 请双手离开键盘鼠标...")
+    time.sleep(1)
+    
+    # 如果是新任务，先做规划（旧任务已经有plan了，不需要重新规划）
+    if not brain.plan: 
+        generate_plan(brain, user_task)
+        # 刚规划完，先存一次档！防止第一步还没做就崩了
+        state_manager.save_session(current_session_id, user_task, brain, status="running")
+
+    execute_plan(brain, user_task, current_session_id) # 注意：把ID传进去
