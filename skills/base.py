@@ -1,46 +1,35 @@
-"""
-Skill Base Class
-所有Skill都必须继承此基类
-"""
-
 from typing import Dict, Any
 
-
 class Skill:
-    """
-    Skill基类 - 所有技能都继承自这个类
-    
-    每个Skill必须实现:
-    1. name: 技能名称
-    2. description: 技能描述
-    3. parameters: 参数定义(JSON Schema格式)
-    4. execute: 执行逻辑
-    """
+    """所有技能必须继承的基类"""
     
     def __init__(self):
         self.name = "base_skill"
-        self.description = "Base skill class"
+        self.description = "Base description"
         self.parameters = {}
+        # 上下文容器：存放 VisionEngine, Client, Settings 等全局对象
+        self.context: Dict[str, Any] = {} 
+
+    def inject_context(self, context: Dict[str, Any]):
+        """
+        [依赖注入] 系统会自动调用此方法，把全局能力传给技能
+        """
+        self.context = context
+        self.on_context_loaded()
+
+    def on_context_loaded(self):
+        """
+        [钩子] 当上下文注入完成后调用。
+        如果你的技能需要 VisionEngine，请在这里获取: self.context.get('vision')
+        """
+        pass
     
     def execute(self, **kwargs) -> str:
-        """
-        执行技能
-        
-        Args:
-            **kwargs: 动态参数，由parameters定义
-            
-        Returns:
-            str: 执行结果（必须是字符串）
-        """
+        """执行逻辑"""
         raise NotImplementedError("Subclass must implement execute()")
     
     def to_tool_definition(self) -> Dict[str, Any]:
-        """
-        转换为LLM可理解的工具定义格式
-        
-        Returns:
-            dict: 包含name, description, parameters的字典
-        """
+        """生成 Tool JSON"""
         return {
             "name": self.name,
             "description": self.description,
