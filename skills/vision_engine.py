@@ -133,7 +133,7 @@ class VisionEngine:
             return response.choices[0].message.content
         
         except Exception as e:
-            print(f"❌ Qwen-VL API 调用失败: {e}")
+            print(f"Qwen-VL API 调用失败: {e}")
             raise
     
     def analyze_ui(self, prompt_instruction, use_cache=True):
@@ -149,7 +149,7 @@ class VisionEngine:
         """
         b64_img, img_size = self.capture_screen(use_cache)
         
-        print(f"👁️ [VisionEngine] 正在分析: {prompt_instruction}...")
+        print(f"[VisionEngine] 正在分析: {prompt_instruction}...")
         
         try:
             # 调用 Qwen-VL
@@ -159,12 +159,12 @@ class VisionEngine:
             result = self._parse_vision_response(content)
             
             if result["confidence"] < 0.5:
-                print(f"⚠️ [VisionEngine] 低置信度: {result['confidence']}")
+                print(f"[VisionEngine] 低置信度: {result['confidence']}")
             
             return result
         
         except Exception as e:
-            print(f"❌ [VisionEngine] 视觉分析失败: {e}")
+            print(f"[VisionEngine] 视觉分析失败: {e}")
             return {
                 "action": "error",
                 "coordinates": [0.5, 0.5],
@@ -235,7 +235,7 @@ class VisionEngine:
                 
                 if result["confidence"] < 0.5:
                     if attempt < retry - 1:
-                        print(f"⚠️ 置信度过低，重试 ({attempt + 1}/{retry})...")
+                        print(f"置信度过低，重试 ({attempt + 1}/{retry})...")
                         time.sleep(1)
                         continue
                     else:

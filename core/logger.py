@@ -33,6 +33,11 @@ class Logger:
     def loading(msg):
         """加载信息"""
         console.print(f"[dim]  └─ {msg}[/dim]")
+        
+    @staticmethod
+    def plan(content):
+        """显示任务规划"""
+        console.print(Panel(content, title="Mission Plan", style="bold cyan", border_style="cyan"))
 
     @staticmethod
     def think(content):
@@ -42,14 +47,14 @@ class Logger:
         if not clean_content:
             return 
             
-        console.print(Panel(clean_content, title="🧠 Think", title_align="left", style="think", border_style="yellow"))
+        console.print(Panel(clean_content, title="Think", title_align="left", style="think", border_style="yellow"))
 
     @staticmethod
     def action(tool_name, args):
         """工具调用动作"""
         args_str = str(args)
-        console.print(f"[tool]🛠️ Tool Call:[/tool] [bold]{tool_name}[/bold]")
-        console.print(f"   [dim]Arguments:[/dim] {args_str}")
+        console.print(f"[tool]Tool Call:[/tool] [bold]{tool_name}[/bold]")
+        # console.print(f"   [dim]Arguments:[/dim] {args_str}")
 
     @staticmethod
     def result(content):
@@ -78,6 +83,8 @@ class Logger:
     @staticmethod
     def error(msg):
         console.print(f"[error]❌ ERROR:[/error] {msg}")
+        
+    pass
 
 # 全局单例
 log = Logger()

@@ -137,7 +137,7 @@ class EmailVisualSkill(Skill):
     
     def _read_inbox(self) -> str:
         """读取收件箱"""
-        print("👀 [EmailVisual] 正在扫描收件箱...")
+        print("[EmailVisual] 正在扫描收件箱...")
         
         # 让视觉引擎读取收件箱列表
         result = self.vision.analyze_ui(
@@ -150,19 +150,19 @@ class EmailVisualSkill(Skill):
         confidence = result.get("confidence", 0)
         
         if confidence < 0.5:
-            return f"⚠️ 识别置信度较低 ({confidence:.2f})，可能不准确\n\n{text_content}"
+            return f"识别置信度较低 ({confidence:.2f})，可能不准确\n\n{text_content}"
         
-        return f"📧 收件箱内容:\n\n{text_content}\n\n(置信度: {confidence:.2f})"
+        return f"收件箱内容:\n\n{text_content}\n\n(置信度: {confidence:.2f})"
     
     def _compose_email(self, recipient: str, subject: str, content: str) -> str:
         """撰写新邮件"""
-        print("📝 [EmailVisual] 开始撰写邮件...")
+        print("[EmailVisual] 开始撰写邮件...")
         
         steps_log = []
         
         try:
             # 步骤 1: 点击写信按钮
-            print("👀 步骤 1/4: 寻找写信入口...")
+            print("步骤 1/4: 寻找写信入口...")
             compose_keywords = [
                 "写信", "写邮件", "撰写", "Compose", "New Email",
                 "新建邮件", "New Message", "Write"
@@ -182,7 +182,7 @@ class EmailVisualSkill(Skill):
             time.sleep(2)  # 等待弹窗
             
             # 步骤 2: 填写收件人
-            print("👀 步骤 2/4: 填写收件人...")
+            print("步骤 2/4: 填写收件人...")
             recipient_result = self.vision.click_element("收件人输入框")
             steps_log.append(recipient_result)
             time.sleep(0.5)
@@ -192,7 +192,7 @@ class EmailVisualSkill(Skill):
             
             # 步骤 3: 填写主题（可选）
             if subject:
-                print("👀 步骤 3/4: 填写主题...")
+                print("步骤 3/4: 填写主题...")
                 subject_result = self.vision.click_element("主题输入框")
                 steps_log.append(subject_result)
                 time.sleep(0.5)
@@ -200,10 +200,10 @@ class EmailVisualSkill(Skill):
                 self._type_text_robust(subject)
                 time.sleep(0.5)
             else:
-                steps_log.append("⏭️ 跳过主题（未提供）")
+                steps_log.append("⏭跳过主题（未提供）")
             
             # 步骤 4: 填写正文
-            print("👀 步骤 4/4: 填写正文...")
+            print("步骤 4/4: 填写正文...")
             body_keywords = ["正文", "邮件正文", "编辑区域", "Message body", "邮件内容"]
             
             body_result = None
@@ -217,7 +217,7 @@ class EmailVisualSkill(Skill):
                 # 尝试按 Tab 键跳转到正文
                 pyautogui.press('tab')
                 time.sleep(0.3)
-                body_result = "⚠️ 未找到正文框，已尝试 Tab 键跳转"
+                body_result = "未找到正文框，已尝试 Tab 键跳转"
             
             steps_log.append(body_result)
             time.sleep(0.5)
@@ -234,7 +234,7 @@ class EmailVisualSkill(Skill):
                 f"主题: {subject or '(无)'}\n"
                 f"正文: {content[:50]}{'...' if len(content) > 50 else ''}\n\n"
                 f"执行步骤:\n{summary}\n\n"
-                f"⚠️ 下一步请调用 send_email 或手动点击发送按钮"
+                f"下一步请调用 send_email 或手动点击发送按钮"
             )
         
         except Exception as e:
@@ -242,7 +242,7 @@ class EmailVisualSkill(Skill):
     
     def _send_email(self) -> str:
         """点击发送按钮"""
-        print("📤 [EmailVisual] 正在发送邮件...")
+        print("[EmailVisual] 正在发送邮件...")
         
         # 多种发送按钮的可能文字
         send_keywords = [
@@ -255,13 +255,13 @@ class EmailVisualSkill(Skill):
                 return f"✅ 邮件已发送\n{result}"
         
         return (
-            "⚠️ 未找到发送按钮，请手动点击发送\n"
+            "未找到发送按钮，请手动点击发送\n"
             "提示：发送按钮通常在窗口底部或顶部"
         )
     
     def _read_email_content(self) -> str:
         """读取当前打开的邮件内容"""
-        print("👀 [EmailVisual] 正在读取邮件内容...")
+        print("[EmailVisual] 正在读取邮件内容...")
         
         result = self.vision.analyze_ui(
             "请识别当前邮件的：发件人、收件人、主题、正文内容。"
@@ -275,6 +275,6 @@ class EmailVisualSkill(Skill):
         confidence = result.get("confidence", 0)
         
         if confidence < 0.5:
-            return f"⚠️ 识别置信度较低 ({confidence:.2f})\n\n{text_content}"
+            return f"识别置信度较低 ({confidence:.2f})\n\n{text_content}"
         
-        return f"📧 邮件内容:\n\n{text_content}"
+        return f"邮件内容:\n\n{text_content}"

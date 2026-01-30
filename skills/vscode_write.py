@@ -1,48 +1,31 @@
 """
-VS Code Write Skill
-通过 GUI 自动化将代码写入 VS Code
+VS Code Write Skill (Human Simulation Mode)
+拟人化模式：模拟人类操作 VS Code 进行代码编写
 """
 
 import time
 import subprocess
-import ast
 import os
+import platform
 import pyautogui
 import pyperclip
-import pygetwindow as gw
 from skills.base import Skill
 
-
-def print_log(role, msg):
-    """临时日志函数（避免循环依赖）"""
-    colors = {
-        "Skill": "\033[97m",
-        "Error": "\033[91m",
-        "Reset": "\033[0m"
-    }
-    print(f"{colors.get(role, colors['Reset'])}[{role}] {msg}{colors['Reset']}")
-
-
 class VSCodeWriteSkill(Skill):
-    """
-    Skill: VS Code 写代码
-    功能: 通过 GUI 自动化将代码写入 VS Code
-    """
-    
     def __init__(self):
         super().__init__()
         self.name = "vscode_write"
         self.description = """
-        使用 VS Code 编辑器写入代码文件。
-        适用场景: 创建新的 Python 脚本、修改代码文件。
-        注意: 必须提供完整的代码，不支持增量修改。
+        【拟人操作】使用 VS Code 编辑器写入代码。
+        Agent 会模拟人类动作：打开编辑器 -> 聚焦窗口 -> 粘贴代码 -> 保存文件。
+        注意：执行期间请勿触碰鼠标键盘。
         """
         self.parameters = {
             "type": "object",
             "properties": {
                 "filename": {
                     "type": "string",
-                    "description": "要创建/编辑的文件名 (如 game.py)"
+                    "description": "文件名 (例如: game.py)"
                 },
                 "code": {
                     "type": "string",
@@ -51,85 +34,73 @@ class VSCodeWriteSkill(Skill):
             },
             "required": ["filename", "code"]
         }
-    
-    def _ensure_vscode_focused(self, filename: str) -> bool:
-        """确保 VS Code 窗口处于激活状态"""
-        subprocess.Popen(f'code "{filename}"', shell=True)
-        time.sleep(2)
-        
-        target_window = None
-        for _ in range(5):
-            windows = gw.getWindowsWithTitle('Visual Studio Code')
-            if windows:
-                target_window = windows[0]
-                break
-            time.sleep(1)
-        
-        if not target_window:
-            return False
-        
-        try:
-            if target_window.isMinimized:
-                target_window.restore()
-            target_window.activate()
+
+    def _wait_for_file_save(self, filename, timeout=5):
+        """等待文件被写入（闭环检测）"""
+        start = time.time()
+        while time.time() - start < timeout:
+            if os.path.exists(filename) and os.path.getsize(filename) > 0:
+                return True
             time.sleep(0.5)
-            return True
-        except:
-            return False
-    
-    def execute(self, code: str, filename: str = None, file: str = None) -> str:
-        """
-        执行写代码操作（支持 filename 或 file 参数）
+        return False
+
+    def execute(self, filename, code, **kwargs) -> str:
+        # 参数容错
+        filename = filename or kwargs.get('file') or kwargs.get('file_name')
+        code = code or kwargs.get('content')
         
-        Args:
-            code: 完整的代码内容
-            filename: 文件名（推荐）
-            file: 文件名（兼容参数）
-            
-        Returns:
-            str: 执行结果
-        """
-        # 兼容两种参数名
-        filename = filename or file
-        if not filename:
-            return "❌ 缺少文件名参数"
+        if not filename: return "❌ 错误: 缺少文件名"
         
-        print_log("Skill", f"[{self.name}] 正在写入文件: {filename}")
-        
-        # 1. 语法预检
-        try:
-            ast.parse(code)
-        except SyntaxError as e:
-            return f"❌ 语法错误 (Line {e.lineno}): {e.msg}"
-        
-        # 2. 物理文件创建
+        # 1. 物理创建空文件 (为了让 VS Code 有东西可开)
+        # 这一步是必须的，否则 code 命令可能会打开一个未保存的 Tab
         if not os.path.exists(filename):
             with open(filename, 'w', encoding='utf-8') as f:
-                f.write("")
-        
-        # 3. VS Code 操作
-        if self._ensure_vscode_focused(filename):
-            # 聚焦编辑区
-            pyautogui.hotkey('ctrl', '1')
-            time.sleep(0.5)
+                f.write("") # 创建空文件
+
+        try:
+            # 2. 【拟人动作】调用系统命令打开 VS Code
+            # 这相当于人类双击文件，系统会自动聚焦到 VS Code 窗口
+            print(f"🖥️ [GUI] 正在唤起 VS Code: {filename}")
+            if platform.system() == "Windows":
+                subprocess.Popen(f'code "{filename}"', shell=True)
+            else:
+                subprocess.Popen(["code", filename])
             
-            # 清空 + 粘贴
-            pyautogui.hotkey('ctrl', 'a')
-            time.sleep(0.3)
-            pyautogui.press('backspace')
-            time.sleep(0.3)
-            
+            # 【关键】给 VS Code 启动和渲染留足时间
+            # Manus 之所以稳，是因为它看屏幕。我们这里盲打，必须给足 Buffer。
+            time.sleep(3) 
+
+            # 3. 【拟人动作】写入代码
+            # 使用剪贴板 + 粘贴 (模拟人类的高效操作，比 typewrite 一个个敲字稳)
             pyperclip.copy(code)
+            time.sleep(0.5) # 等待剪贴板写入
+
+            # 激活编辑区 (防止焦点在侧边栏)
+            pyautogui.click(pyautogui.size().width // 2, pyautogui.size().height // 2)
+            
+            # 全选 -> 清空 -> 粘贴 -> 保存
+            print("⌨️ [GUI] 正在输入代码...")
+            
+            # 全选 (Ctrl+A)
+            pyautogui.hotkey('ctrl', 'a')
             time.sleep(0.5)
+            
+            # 粘贴 (Ctrl+V)
             pyautogui.hotkey('ctrl', 'v')
-            time.sleep(1)
+            time.sleep(1.0) # 等待大段文本粘贴完成
             
-            # 格式化 + 保存
-            pyautogui.hotkey('shift', 'alt', 'f')
-            time.sleep(1)
+            # 保存 (Ctrl+S)
+            print("💾 [GUI] 保存文件...")
             pyautogui.hotkey('ctrl', 's')
-            time.sleep(0.5)
-            
-            return f"✅ 代码已写入 {filename} 并保存"
-        else:
-            return "❌ 无法聚焦 VS Code 窗口"
+            time.sleep(1.0) # 等待磁盘写入
+
+            # 4. 【闭环验证】检查到底写进去没
+            # 这是 Moltbot/Manus 的核心逻辑：操作完必须看一眼结果
+            if self._wait_for_file_save(filename):
+                size = os.path.getsize(filename)
+                return f"✅ 代码已通过 VS Code 写入 {filename} (大小: {size} bytes)。"
+            else:
+                return f"VS Code 已打开，但文件 {filename} 仍然是空的 (0 bytes)。可能焦点丢失或保存快捷键未生效。请尝试重新执行。"
+
+        except Exception as e:
+            return f"❌ GUI 操作异常: {str(e)}"
