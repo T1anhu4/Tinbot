@@ -6,18 +6,27 @@ A multi-skilled agent with planning and reflection capabilities, powered by Qwen
 ```
 Tinbot/
 ├── agent.py                   # 主程序入口
-├── state.py                   # 状态管理程序
 ├── .env                       # 全局配置
-├── skills/                    # Skills 目录（模块化技能）
+├── core/
+│   ├── config.py              # 配置参数
+│   ├── logger.py              # 日志功能
+│   ├── skill_manager.py       # Skill自动注册功能
+│   ├── state.py               # 状态管理功能(断开重开不丢失)
+│   ├── vision.py              # VL功能
+├── skills/                    # Skills目录(模块化技能)
 │   ├── __init__.py            # 包初始化文件
-│   ├── base.py                # Skill 基类
-│   ├── vscode_write.py        # VS Code 写代码 Skill
-│   ├── run_python.py          # 运行 Python Skill
-│   ├── list_files.py          # 列出文件 Skill
+│   ├── base.py                # Skill基类
+│   ├── system_info.py         # 获取系统信息Skill
+│   ├── browser_dom.py         # 获取浏览器DOM信息Skill
+│   ├── browser.py             # 浏览器基本操控Skill(滑动、点击)
+│   ├── eye.py                 # 主动式接管屏幕检测Skill
+│   ├── vscode_write.py        # VS Code写代码Skill
+│   ├── run_python.py          # 运行Python Skill
+│   ├── list_files.py          # 列出文件Skill
 │   ├── computer_control.py    # 电脑基础操作Skill
 │   ├── email_visual.py        # 邮件相关操作Skill
 │   └── vision_engine.py       # 多模态识别Skill
-├── memory/                    # Memory 目录（状态管理数据库保存路径）
+├── memory/                    # Memory目录(状态管理数据库保存路径)
 │   ├── state.db               # 状态sqllite数据库
 └── README.md    
 ```
